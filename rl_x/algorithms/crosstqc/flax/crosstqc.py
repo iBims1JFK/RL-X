@@ -46,11 +46,17 @@ class CrossTQC:
         self.learning_starts = config.algorithm.learning_starts
         self.batch_size = config.algorithm.batch_size
         self.gamma = config.algorithm.gamma
+        self.ensemble_size = config.algorithm.ensemble_size
+        self.nr_atoms_per_net = config.algorithm.nr_atoms_per_net
+        self.nr_dropped_atoms_per_net = config.algorithm.nr_dropped_atoms_per_net
+        self.huber_kappa = config.algorithm.huber_kappa
         self.policy_delay = config.algorithm.policy_delay
         self.target_entropy = config.algorithm.target_entropy
         self.logging_frequency = config.algorithm.logging_frequency
         self.evaluation_frequency = config.algorithm.evaluation_frequency
         self.evaluation_episodes = config.algorithm.evaluation_episodes
+        self.nr_total_atoms = self.nr_atoms_per_net * self.ensemble_size
+        self.nr_target_atoms = self.nr_total_atoms - (self.nr_dropped_atoms_per_net * self.ensemble_size)
 
         rlx_logger.info(f"Using device: {jax.default_backend()}")
         
@@ -158,19 +164,30 @@ class CrossTQC:
 
                 alpha = self.entropy_coefficient.apply(entropy_coefficient_state.params)
 
-                current_and_next_q, critic_state_update = self.critic.apply(
+                current_and_next_q_atoms, critic_state_update = self.critic.apply(
                     {"params": critic_params, "batch_stats": critic_state.batch_stats},
                     jnp.concatenate([state, next_state], axis=0),
                     jnp.concatenate([action, next_action], axis=0),
                     train=True, mutable=["batch_stats"]
                 )
-                q, next_q = jnp.split(jnp.squeeze(current_and_next_q, 2), 2, axis=1)
+                q_atoms, next_q_target_atoms = jnp.split(current_and_next_q_atoms, 2, axis=1)
+                next_q_target_atoms = jnp.transpose(next_q_target_atoms, (1, 0, 2)).reshape(self.batch_size, self.nr_total_atoms)
+                next_q_target_atoms = jnp.sort(next_q_target_atoms)
+                next_q_target_atoms = next_q_target_atoms[:, :self.nr_target_atoms]
 
-                min_next_q_target = jnp.min(stop_gradient(next_q), axis=0)
+                y = reward.reshape(-1, 1) + self.gamma * (1 - terminated.reshape(-1, 1)) * (next_q_target_atoms - alpha * next_log_prob.reshape(-1, 1))
+                y = jnp.expand_dims(y, axis=1)  # (batch_size, 1, nr_target_atoms)
 
-                y = reward + self.gamma * (1 - terminated) * (min_next_q_target - alpha * next_log_prob)
+                q_atoms = jnp.transpose(q_atoms, (1, 0, 2)).reshape(self.batch_size, self.nr_total_atoms)
+                q_atoms = jnp.expand_dims(q_atoms, axis=2)  # (batch_size, nr_total_atoms, 1)
 
-                q_loss = jnp.mean((q - y) ** 2)
+                cumulative_prob = (jnp.arange(self.nr_total_atoms, dtype=jnp.float32) + 0.5) / self.nr_total_atoms
+                cumulative_prob = jnp.expand_dims(cumulative_prob, axis=(0, -1))  # (1, nr_total_atoms, 1)
+
+                delta_i_j = y - q_atoms
+                abs_delta_i_j = jnp.abs(delta_i_j)
+                huber_loss = jnp.where(abs_delta_i_j <= self.huber_kappa, 0.5 * delta_i_j ** 2, self.huber_kappa * (abs_delta_i_j - 0.5 * self.huber_kappa))
+                q_loss = jnp.mean(jnp.abs(cumulative_prob - (delta_i_j < 0).astype(jnp.float32)) * huber_loss / self.huber_kappa)
 
                 # Create metrics
                 metrics = {
@@ -215,16 +232,17 @@ class CrossTQC:
                 current_log_prob = dist.log_prob(current_action)
                 entropy = stop_gradient(-current_log_prob)
 
-                q = self.critic.apply(
+                q_atoms = self.critic.apply(
                     {"params": critic_state.params, "batch_stats": critic_state.batch_stats},
                     state, current_action, train=False
                 )
-                min_q = jnp.min(jnp.squeeze(q, 2), axis=0)
+                q_atoms = jnp.transpose(q_atoms, (1, 0, 2)).reshape(self.batch_size, self.nr_total_atoms)
+                mean_q_atoms = jnp.mean(q_atoms, axis=1)
 
                 alpha_with_grad = self.entropy_coefficient.apply(entropy_coefficient_params)
                 alpha = stop_gradient(alpha_with_grad)
 
-                policy_loss = jnp.mean(alpha * current_log_prob - min_q)
+                policy_loss = jnp.mean(alpha * current_log_prob - mean_q_atoms)
 
                 # Entropy loss
                 entropy_loss = jnp.mean(alpha_with_grad * (entropy - self.target_entropy))
@@ -238,7 +256,7 @@ class CrossTQC:
                     "loss/entropy_loss": entropy_loss,
                     "entropy/entropy": jnp.mean(entropy),
                     "entropy/alpha": jnp.mean(alpha),
-                    "q_value/q_value": jnp.mean(min_q),
+                    "q_value/q_value": jnp.mean(mean_q_atoms),
                 }
 
                 return loss, (policy_state_update, metrics)

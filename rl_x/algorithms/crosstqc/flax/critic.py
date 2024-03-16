@@ -12,14 +12,16 @@ def get_critic(config, env):
 
     if observation_space_type == ObservationSpaceType.FLAT_VALUES:
         return VectorCritic(
+            config.algorithm.nr_atoms_per_net,
             config.algorithm.batch_renorm_momentum,
             config.algorithm.batch_renorm_warmup_steps,
             config.algorithm.critic_nr_hidden_units,
-            2
+            config.algorithm.ensemble_size
         )
 
 
 class Critic(nn.Module):
+    nr_atoms: int
     batch_renorm_momentum: float
     batch_renorm_warmup_steps: int
     nr_hidden_units: int
@@ -50,12 +52,13 @@ class Critic(nn.Module):
             warm_up_steps=self.batch_renorm_warmup_steps
         )(x)
 
-        x = nn.Dense(1)(x)
+        x = nn.Dense(self.nr_atoms)(x)
 
         return x
     
 
 class VectorCritic(nn.Module):
+    nr_atoms_per_net: int
     batch_renorm_momentum: float
     batch_renorm_warmup_steps: int
     nr_hidden_units: int
@@ -77,6 +80,7 @@ class VectorCritic(nn.Module):
         )
 
         q_values = vmap_critic(
+            nr_atoms=self.nr_atoms_per_net,
             batch_renorm_momentum=self.batch_renorm_momentum,
             batch_renorm_warmup_steps=self.batch_renorm_warmup_steps,
             nr_hidden_units=self.nr_hidden_units

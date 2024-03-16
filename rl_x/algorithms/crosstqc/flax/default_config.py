@@ -16,6 +16,10 @@ def get_config(algorithm_name):
     config.learning_starts = 5000
     config.batch_size = 256
     config.gamma = 0.99
+    config.ensemble_size = 2
+    config.nr_atoms_per_net = 25
+    config.nr_dropped_atoms_per_net = 2
+    config.huber_kappa = 1.0
     config.policy_delay = 3
     config.target_entropy = "auto"
     config.log_std_min = -20
