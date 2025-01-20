@@ -69,8 +69,11 @@ class Runner:
         elif algorithm_uses_jax or environment_uses_jax:
             # Guarantee enough memory for CUBLAS to initialize when using jax
             os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
-            # Set device
             import jax
+            # Spent most possible time to optimize execution time and memory usage
+            jax.config.update("jax_exec_time_optimization_effort", 1.0)
+            jax.config.update("jax_memory_fitting_effort", 1.0)
+            # Set device
             alg_device = None
             if algorithm_uses_jax:
                 alg_device = [arg for arg in sys.argv if arg.startswith("--algorithm.device=")]
@@ -90,7 +93,10 @@ class Runner:
             device = alg_device or env_device
             if device == "cpu":
                 jax.config.update("jax_platform_name", "cpu")
-            jax.default_backend()
+            try:
+                jax.default_backend()
+            except:
+                pass
 
         self._model_class = get_algorithm_model_class(algorithm_name)
         self._create_env = get_environment_create_env(environment_name)
@@ -250,6 +256,7 @@ class Runner:
             raise ValueError("Saving model is not supported in test mode")
         
         run_path = f"runs/{self._config.runner.project_name}/{self._config.runner.exp_name}/{self._config.runner.run_name}"
+        run_path = os.path.abspath(run_path)
 
         env = self._create_env(self._config)
         

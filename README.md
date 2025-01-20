@@ -69,10 +69,10 @@ conda create -n rlx python=3.11.4
 conda activate rlx
 git clone git@github.com:nico-bohlinger/RL-X.git
 cd RL-X
-pip install -e .[all]
-pip install "torch>=2.2.1" --index-url https://download.pytorch.org/whl/cu118 --upgrade
+pip install -e .[all] --config-settings editable_mode=compat
 pip uninstall $(pip freeze | grep -i '\-cu12' | cut -d '=' -f 1) -y
-pip install -U "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+pip install "torch>=2.5.1" --index-url https://download.pytorch.org/whl/cu118 --upgrade
+pip install -U "jax[cuda12]"
 ```
 For other configurations, see the [detailed installation guide](https://nico-bohlinger.github.io/RL-X/#detailed-installation-guide) in the documentation.
 
@@ -88,14 +88,14 @@ Example for Google Colab: [![Open In Colab](https://colab.research.google.com/as
 
 
 ## Citation
-If you use RL-X in your research, please cite the following [preprint](https://arxiv.org/abs/2310.13396):
+If you use RL-X in your research, please cite the following [paper](https://arxiv.org/abs/2310.13396):
 ```bibtex
-@misc{bohlinger2023rlx,
+@incollection{bohlinger2023rlx,
       title={RL-X: A Deep Reinforcement Learning Library (not only) for RoboCup}, 
       author={Nico Bohlinger and Klaus Dorer},
+      booktitle={Robot World Cup},
+      pages={228--239},
       year={2023},
-      eprint={2310.13396},
-      archivePrefix={arXiv},
-      primaryClass={cs.RO}
+      publisher={Springer}
 }
 ```

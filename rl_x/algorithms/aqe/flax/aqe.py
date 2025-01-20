@@ -1,4 +1,6 @@
 import os
+import shutil
+import json
 import logging
 import time
 from collections import deque
@@ -78,19 +80,19 @@ class AQE():
         self.entropy_coefficient.apply = jax.jit(self.entropy_coefficient.apply)
 
         def q_linear_schedule(count):
-            step = count - self.learning_starts
+            step = (count * self.nr_envs) - self.learning_starts
             total_steps = self.total_timesteps - self.learning_starts
             fraction = 1.0 - (step / (total_steps * self.q_update_steps))
             return self.learning_rate * fraction
     
         def policy_linear_schedule(count):
-            step = count - self.learning_starts
+            step = (count * self.nr_envs) - self.learning_starts
             total_steps = self.total_timesteps - self.learning_starts
             fraction = 1.0 - (step / (total_steps * self.policy_update_steps))
             return self.learning_rate * fraction
 
         def entropy_linear_schedule(count):
-            step = count - self.learning_starts
+            step = (count * self.nr_envs) - self.learning_starts
             total_steps = self.total_timesteps - self.learning_starts
             fraction = 1.0 - (step / (total_steps * self.entropy_update_steps))
             return self.learning_rate * fraction
@@ -124,9 +126,8 @@ class AQE():
         if self.save_model:
             os.makedirs(self.save_path)
             self.best_mean_return = -np.inf
-            self.best_model_file_name = "model_best_jax"
-            best_model_check_point_handler = orbax.checkpoint.PyTreeCheckpointHandler(aggregate_filename=self.best_model_file_name)
-            self.best_model_checkpointer = orbax.checkpoint.Checkpointer(best_model_check_point_handler)
+            self.best_model_file_name = "best.model"
+            self.best_model_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         
     
     def train(self):
@@ -430,16 +431,17 @@ class AQE():
 
     def save(self):
         checkpoint = {
-            "config_algorithm": self.config.algorithm.to_dict(),
             "policy": self.policy_state,
             "critic": self.critic_state,
             "entropy_coefficient": self.entropy_coefficient_state,           
         }
         save_args = orbax_utils.save_args_from_target(checkpoint)
         self.best_model_checkpointer.save(f"{self.save_path}/tmp", checkpoint, save_args=save_args)
-        os.rename(f"{self.save_path}/tmp/{self.best_model_file_name}", f"{self.save_path}/{self.best_model_file_name}")
-        os.remove(f"{self.save_path}/tmp/_METADATA")
-        os.rmdir(f"{self.save_path}/tmp")
+        with open(f"{self.save_path}/tmp/config_algorithm.json", "w") as f:
+            json.dump(self.config.algorithm.to_dict(), f)
+        shutil.make_archive(f"{self.save_path}/{self.best_model_file_name}", "zip", f"{self.save_path}/tmp")
+        os.rename(f"{self.save_path}/{self.best_model_file_name}.zip", f"{self.save_path}/{self.best_model_file_name}")
+        shutil.rmtree(f"{self.save_path}/tmp")
 
         if self.track_wandb:
             wandb.save(f"{self.save_path}/{self.best_model_file_name}", base_path=self.save_path)
@@ -447,29 +449,31 @@ class AQE():
 
     def load(config, env, run_path, writer, explicitly_set_algorithm_params):
         splitted_path = config.runner.load_model.split("/")
-        checkpoint_dir = "/".join(splitted_path[:-1])
+        checkpoint_dir = os.path.abspath("/".join(splitted_path[:-1]))
         checkpoint_file_name = splitted_path[-1]
+        shutil.unpack_archive(f"{checkpoint_dir}/{checkpoint_file_name}", f"{checkpoint_dir}/tmp", "zip")
+        checkpoint_dir = f"{checkpoint_dir}/tmp"
 
-        check_point_handler = orbax.checkpoint.PyTreeCheckpointHandler(aggregate_filename=checkpoint_file_name)
-        checkpointer = orbax.checkpoint.Checkpointer(check_point_handler)
-
-        loaded_algorithm_config = checkpointer.restore(checkpoint_dir)["config_algorithm"]
+        loaded_algorithm_config = json.load(open(f"{checkpoint_dir}/config_algorithm.json", "r"))
         for key, value in loaded_algorithm_config.items():
             if f"algorithm.{key}" not in explicitly_set_algorithm_params:
                 config.algorithm[key] = value
         model = AQE(config, env, run_path, writer)
 
         target = {
-            "config_algorithm": config.algorithm.to_dict(),
             "policy": model.policy_state,
             "critic": model.critic_state,
             "entropy_coefficient": model.entropy_coefficient_state
         }
-        checkpoint = checkpointer.restore(checkpoint_dir, item=target)
+        restore_args = orbax_utils.restore_args_from_target(target)
+        checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+        checkpoint = checkpointer.restore(checkpoint_dir, item=target, restore_args=restore_args)
 
         model.policy_state = checkpoint["policy"]
         model.critic_state = checkpoint["critic"]
         model.entropy_coefficient_state = checkpoint["entropy_coefficient"]
+
+        shutil.rmtree(checkpoint_dir)
 
         return model
     

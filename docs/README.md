@@ -65,21 +65,26 @@ For MacOS and Windows, EnvPool is currently not supported. Therefore, the follow
 ```
 pip install -e .
 ```
+To keep linting support when registering algorithms or environments outside of RL-X, add the `editable_mode=compat` argument, e.g.:
+```
+pip install -e .[all] --config-settings editable_mode=compat
+```
 
 ### 4. PyTorch
 For Linux, MacOS and Windows, PyTorch has to be installed separately to use the CUDA 11.8 version such that there are no conflicts with JAX.
-```
-pip install "torch>=2.2.1" --index-url https://download.pytorch.org/whl/cu118 --upgrade
-```
-If PyTorch was previously installed with CUDA 12.X (potentially even through pip install -e .) then it is necessary to uninstall the related packages. Otherwise JAX might not work on the GPU.
+If PyTorch was previously installed with CUDA 12.X (potentially even through pip install -e .) then it is necessary to uninstall the related packages.
 ```
 pip uninstall $(pip freeze | grep -i '\-cu12' | cut -d '=' -f 1) -y
+```
+Afterwards, PyTorch can be installed with the following command:
+```
+pip install "torch>=2.5.1" --index-url https://download.pytorch.org/whl/cu118 --upgrade
 ```
 
 ### 5. JAX
 For Linux, JAX with GPU support can be installed with the following command:
 ```
-pip install -U "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+pip install -U "jax[cuda12]"
 ```
 For MacOS and Windows, JAX with GPU support is not supported out-of-the-box. However, it can be done with some extra effort (see [here](https://github.com/google/jax) for more information).
 
