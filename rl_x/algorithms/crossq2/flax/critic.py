@@ -2,8 +2,6 @@ import numpy as np
 import jax.numpy as jnp
 import flax.linen as nn
 
-from rl_x.algorithms.crossq2.flax.batch_renorm import BatchRenorm
-
 from rl_x.environments.observation_space_type import ObservationSpaceType
 
 
@@ -12,42 +10,37 @@ def get_critic(config, env):
 
     if observation_space_type == ObservationSpaceType.FLAT_VALUES:
         return VectorCritic(
-            config.algorithm.batch_renorm_momentum,
-            config.algorithm.batch_renorm_warmup_steps,
+            config.algorithm.batch_norm_momentum,
             config.algorithm.critic_nr_hidden_units,
             config.algorithm.ensemble_size
         )
 
 
 class Critic(nn.Module):
-    batch_renorm_momentum: float
-    batch_renorm_warmup_steps: int
+    batch_norm_momentum: float
     nr_hidden_units: int
 
     @nn.compact
     def __call__(self, x: np.ndarray, a: np.ndarray, train):
         x = jnp.concatenate([x, a], -1)
 
-        x = BatchRenorm(
+        x = nn.BatchNorm(
             use_running_average=not train,
-            momentum=self.batch_renorm_momentum,
-            warm_up_steps=self.batch_renorm_warmup_steps
+            momentum=self.batch_norm_momentum,
         )(x)
 
         x = nn.Dense(self.nr_hidden_units)(x)
         x = nn.relu(x)
-        x = BatchRenorm(
+        x = nn.BatchNorm(
             use_running_average=not train,
-            momentum=self.batch_renorm_momentum,
-            warm_up_steps=self.batch_renorm_warmup_steps
+            momentum=self.batch_norm_momentum,
         )(x)
 
         x = nn.Dense(self.nr_hidden_units)(x)
         x = nn.relu(x)
-        x = BatchRenorm(
+        x = nn.BatchNorm(
             use_running_average=not train,
-            momentum=self.batch_renorm_momentum,
-            warm_up_steps=self.batch_renorm_warmup_steps
+            momentum=self.batch_norm_momentum,
         )(x)
 
         x = nn.Dense(1)(x)
@@ -56,8 +49,7 @@ class Critic(nn.Module):
     
 
 class VectorCritic(nn.Module):
-    batch_renorm_momentum: float
-    batch_renorm_warmup_steps: int
+    batch_norm_momentum: float
     nr_hidden_units: int
     nr_critics: int
 
@@ -77,8 +69,7 @@ class VectorCritic(nn.Module):
         )
 
         q_values = vmap_critic(
-            batch_renorm_momentum=self.batch_renorm_momentum,
-            batch_renorm_warmup_steps=self.batch_renorm_warmup_steps,
+            batch_norm_momentum=self.batch_norm_momentum,
             nr_hidden_units=self.nr_hidden_units
         )(obs, action, train)
 

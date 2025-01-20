@@ -7,7 +7,6 @@ from tensorflow_probability.substrates import jax as tfp
 tfd = tfp.distributions
 
 from rl_x.algorithms.crossq2.flax.tanh_transformed_distribution import TanhTransformedDistribution
-from rl_x.algorithms.crossq2.flax.batch_renorm import BatchRenorm
 
 from rl_x.environments.action_space_type import ActionSpaceType
 from rl_x.environments.observation_space_type import ObservationSpaceType
@@ -23,8 +22,7 @@ def get_policy(config, env):
                 env.single_action_space.shape,
                 config.algorithm.log_std_min,
                 config.algorithm.log_std_max,
-                config.algorithm.batch_renorm_momentum,
-                config.algorithm.batch_renorm_warmup_steps,
+                config.algorithm.batch_norm_momentum,
                 config.algorithm.policy_nr_hidden_units
             ),
             get_processed_action_function(jnp.array(env.single_action_space.low), jnp.array(env.single_action_space.high))
@@ -36,32 +34,28 @@ class Policy(nn.Module):
     as_shape: Sequence[int]
     log_std_min: float
     log_std_max: float
-    batch_renorm_momentum: float
-    batch_renorm_warmup_steps: int
+    batch_norm_momentum: float
     nr_hidden_units: int
 
     @nn.compact
     def __call__(self, x, train):
-        x = BatchRenorm(
+        x = nn.BatchNorm(
             use_running_average=not train,
-            momentum=self.batch_renorm_momentum,
-            warm_up_steps=self.batch_renorm_warmup_steps
+            momentum=self.batch_norm_momentum,
         )(x)
 
         x = nn.Dense(self.nr_hidden_units)(x)
         x = nn.relu(x)
-        x = BatchRenorm(
+        x = nn.BatchNorm(
             use_running_average=not train,
-            momentum=self.batch_renorm_momentum,
-            warm_up_steps=self.batch_renorm_warmup_steps
+            momentum=self.batch_norm_momentum,
         )(x)
 
         x = nn.Dense(self.nr_hidden_units)(x)
         x = nn.relu(x)
-        x = BatchRenorm(
+        x = nn.BatchNorm(
             use_running_average=not train,
-            momentum=self.batch_renorm_momentum,
-            warm_up_steps=self.batch_renorm_warmup_steps
+            momentum=self.batch_norm_momentum,
         )(x)
 
         mean = nn.Dense(np.prod(self.as_shape).item())(x)

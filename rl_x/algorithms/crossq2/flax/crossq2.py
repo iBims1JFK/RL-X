@@ -48,7 +48,7 @@ class CrossQ2:
         self.learning_starts = config.algorithm.learning_starts
         self.batch_size = config.algorithm.batch_size
         self.gamma = config.algorithm.gamma
-        self.policy_delay = config.algorithm.policy_delay
+        self.q_update_steps = config.algorithm.q_update_steps
         self.target_entropy = config.algorithm.target_entropy
         self.logging_frequency = config.algorithm.logging_frequency
         self.evaluation_frequency = config.algorithm.evaluation_frequency
@@ -75,15 +75,27 @@ class CrossQ2:
 
         self.entropy_coefficient.apply = jax.jit(self.entropy_coefficient.apply)
 
-        def linear_schedule(count):
+        def q_linear_schedule(count):
+            step = (count * self.nr_envs) - self.learning_starts
+            total_steps = self.total_timesteps - self.learning_starts
+            fraction = 1.0 - (step / (total_steps * self.q_update_steps))
+            return self.learning_rate * fraction
+    
+        def policy_linear_schedule(count):
+            step = (count * self.nr_envs) - self.learning_starts
+            total_steps = self.total_timesteps - self.learning_starts
+            fraction = 1.0 - (step / total_steps)
+            return self.learning_rate * fraction
+
+        def entropy_linear_schedule(count):
             step = (count * self.nr_envs) - self.learning_starts
             total_steps = self.total_timesteps - self.learning_starts
             fraction = 1.0 - (step / total_steps)
             return self.learning_rate * fraction
         
-        self.q_learning_rate = linear_schedule if self.anneal_learning_rate else self.learning_rate
-        self.policy_learning_rate = linear_schedule if self.anneal_learning_rate else self.learning_rate
-        self.entropy_learning_rate = linear_schedule if self.anneal_learning_rate else self.learning_rate
+        self.q_learning_rate = q_linear_schedule if self.anneal_learning_rate else self.learning_rate
+        self.policy_learning_rate = policy_linear_schedule if self.anneal_learning_rate else self.learning_rate
+        self.entropy_learning_rate = entropy_linear_schedule if self.anneal_learning_rate else self.learning_rate
 
         state = jnp.array([self.env.single_observation_space.sample()])
         action = jnp.array([self.env.single_action_space.sample()])
@@ -142,11 +154,11 @@ class CrossQ2:
 
 
         @jax.jit
-        def update_critic(
+        def update(
                 policy_state: TrainState, critic_state: TrainState, entropy_coefficient_state: TrainState,
                 states: np.ndarray, next_states: np.ndarray, actions: np.ndarray, rewards: np.ndarray, terminations: np.ndarray, key: jax.random.PRNGKey
             ):
-            def loss_fn(critic_params: flax.core.FrozenDict,
+            def critic_loss_fn(critic_params: flax.core.FrozenDict,
                         state: np.ndarray, next_state: np.ndarray, action: np.ndarray, reward: np.ndarray, terminated: np.ndarray,
                         subkey: jax.random.PRNGKey
                 ):
@@ -180,32 +192,9 @@ class CrossQ2:
                 }
 
                 return q_loss, (critic_state_update, metrics)
+            
 
-
-            grad_loss_fn = jax.value_and_grad(loss_fn, argnums=(0,), has_aux=True)
-
-            key, subkey = jax.random.split(key, 2)
-
-            (loss, (critic_state_update, metrics)), (critic_gradients,) = grad_loss_fn(
-                critic_state.params,
-                states, next_states, actions, rewards, terminations, subkey)
-
-            critic_state = critic_state.apply_gradients(grads=critic_gradients)
-
-            critic_state = critic_state.replace(batch_stats=critic_state_update["batch_stats"])
-
-            metrics["lr/learning_rate"] = critic_state.opt_state.hyperparams["learning_rate"]
-            metrics["gradients/critic_grad_norm"] = optax.global_norm(critic_gradients)
-
-            return critic_state, metrics, key
-        
-
-        @jax.jit
-        def update_policy_and_entropy_coefficient(
-                policy_state: TrainState, critic_state: TrainState, entropy_coefficient_state: TrainState,
-                states: np.ndarray, key: jax.random.PRNGKey
-            ):
-            def loss_fn(policy_params: flax.core.FrozenDict, entropy_coefficient_params: flax.core.FrozenDict,
+            def policy_entropy_loss_fn(policy_params: flax.core.FrozenDict, entropy_coefficient_params: flax.core.FrozenDict,
                         state: np.ndarray, subkey: jax.random.PRNGKey
                 ):
                 # Policy loss
@@ -244,24 +233,63 @@ class CrossQ2:
                 }
 
                 return loss, (policy_state_update, metrics)
-            
 
-            grad_loss_fn = jax.value_and_grad(loss_fn, argnums=(0, 1), has_aux=True)
 
-            key, subkey = jax.random.split(key, 2)
+            grad_critic_loss_fn = jax.value_and_grad(critic_loss_fn, argnums=(0,), has_aux=True)
+            grad_policy_entropy_loss_fn = jax.value_and_grad(policy_entropy_loss_fn, argnums=(0, 1), has_aux=True)
 
-            (loss, (policy_state_update, metrics)), (policy_gradients, entropy_gradients) = grad_loss_fn(
-                policy_state.params, entropy_coefficient_state.params, states, subkey)
+            # Update critic
+            # Tested jax.lax.scan for the loop: Improves initial compilation time but slows down sps by 10 percent
+            metrics_list = []
+            for i in range(self.q_update_steps):
+                key, critic_key = jax.random.split(key, 2)
+
+                (critic_loss, (critic_state_update, metrics)), (critic_gradients,) = grad_critic_loss_fn(
+                    critic_state.params,
+                    states[i], next_states[i], actions[i], rewards[i], terminations[i], critic_key)
+
+                critic_state = critic_state.apply_gradients(grads=critic_gradients)
+
+                critic_state = critic_state.replace(batch_stats=critic_state_update["batch_stats"])
+
+                # Weight normalization
+                for c in ["VmapCritic_0", "VmapCritic_0"]:
+                    for i, (k, v) in enumerate(critic_state.params[c].items()):
+                        if "Batch" in k or "Layer" in k:
+                            critic_state.params[c][k]["scale"] = critic_state.params[c][k][
+                                "scale"
+                            ] / jnp.linalg.norm(critic_state.params[c][k]["scale"], axis=0, keepdims=True)
+
+                        elif "Dense" in k:
+                            if k == "Dense_2":
+                                continue
+                            critic_state.params[c][k]["kernel"] = critic_state.params[c][k][
+                                "kernel"
+                            ] / jnp.linalg.norm(critic_state.params[c][k]["kernel"], axis=0, keepdims=True)
+
+                metrics["gradients/critic_grad_norm"] = optax.global_norm(critic_gradients)
+                metrics_list.append(metrics)
+
+            critic_metrics = {key: jnp.mean(jnp.array([metrics[key] for metrics in metrics_list])) for key in metrics_list[0].keys()}
+
+            # Update policy and entropy coefficient
+            key, policy_entropy_key = jax.random.split(key, 2)
+
+            (policy_loss, (policy_state_update, policy_entropy_metrics)), (policy_gradients, entropy_gradients) = grad_policy_entropy_loss_fn(
+                policy_state.params, entropy_coefficient_state.params, states[0], policy_entropy_key)
 
             policy_state = policy_state.apply_gradients(grads=policy_gradients)
             entropy_coefficient_state = entropy_coefficient_state.apply_gradients(grads=entropy_gradients)
 
             policy_state = policy_state.replace(batch_stats=policy_state_update["batch_stats"])
 
+            # Complete metrics
+            metrics = {**critic_metrics, **policy_entropy_metrics}
+            metrics["lr/learning_rate"] = policy_state.opt_state.hyperparams["learning_rate"]
             metrics["gradients/policy_grad_norm"] = optax.global_norm(policy_gradients)
             metrics["gradients/entropy_grad_norm"] = optax.global_norm(entropy_gradients)
 
-            return policy_state, entropy_coefficient_state, metrics, key
+            return policy_state, critic_state, entropy_coefficient_state, metrics, key
         
 
         @jax.jit
@@ -326,32 +354,25 @@ class CrossQ2:
 
             # What to do in this step after acting
             should_learning_start = global_step > self.learning_starts
-            should_optimize_critic = should_learning_start
-            should_optimize_policy = should_learning_start and global_step % self.policy_delay == 0
+            should_optimize = should_learning_start
             should_evaluate = global_step % self.evaluation_frequency == 0 and self.evaluation_frequency != -1
             should_try_to_save = should_learning_start and self.save_model and dones_this_rollout > 0
             should_log = global_step % self.logging_frequency == 0
 
 
             # Optimizing - Prepare batches
-            if should_optimize_critic:
-                batch_states, batch_next_states, batch_actions, batch_rewards, batch_terminations = replay_buffer.sample(self.batch_size)
+            if should_optimize:
+                nr_batches_needed = self.q_update_steps
+                batch_states, batch_next_states, batch_actions, batch_rewards, batch_terminations = replay_buffer.sample(self.batch_size, nr_batches_needed)
 
 
-            # Optimizing - Q-functions
-            if should_optimize_critic:
-                self.critic_state, optimization_metrics, self.key = update_critic(self.policy_state, self.critic_state, self.entropy_coefficient_state, batch_states, batch_next_states, batch_actions, batch_rewards, batch_terminations, self.key)
-                for key, value in optimization_metrics.items():
-                    optimization_metrics_collection.setdefault(key, []).append(value)
-                nr_critic_updates += 1
-
-
-            # Optimizing - Policy and entropy coefficient
-            if should_optimize_policy:
-                self.policy_state, self.entropy_coefficient_state, optimization_metrics, self.key = update_policy_and_entropy_coefficient(self.policy_state, self.critic_state, self.entropy_coefficient_state, batch_states, self.key)
+            # Optimizing - Q-functions, Policy and entropy coefficient
+            if should_optimize:
+                self.policy_state, self.critic_state, self.entropy_coefficient_state, optimization_metrics, self.key = update(self.policy_state, self.critic_state, self.entropy_coefficient_state, batch_states, batch_next_states, batch_actions, batch_rewards, batch_terminations, self.key)
                 for key, value in optimization_metrics.items():
                     optimization_metrics_collection.setdefault(key, []).append(value)
                 nr_policy_updates += 1
+                nr_critic_updates += self.q_update_steps
             
             optimizing_end_time = time.time()
             time_metrics_collection.setdefault("time/optimizing_time", []).append(optimizing_end_time - acting_end_time)
