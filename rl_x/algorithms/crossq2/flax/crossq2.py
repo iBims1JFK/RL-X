@@ -42,8 +42,6 @@ class CrossQ2:
         self.nr_envs = config.environment.nr_envs
         self.learning_rate = config.algorithm.learning_rate
         self.anneal_learning_rate = config.algorithm.anneal_learning_rate
-        self.policy_adam_b1 = config.algorithm.policy_adam_b1
-        self.critic_adam_b1 = config.algorithm.critic_adam_b1
         self.buffer_size = config.algorithm.buffer_size
         self.learning_starts = config.algorithm.learning_starts
         self.batch_size = config.algorithm.batch_size
@@ -58,8 +56,8 @@ class CrossQ2:
         
         self.rng = np.random.default_rng(self.seed)
         self.key = jax.random.PRNGKey(self.seed)
-        self.key, policy_key, policy_batch_renorm_key, critic_key, critic_batch_renorm_key, entropy_coefficient_key \
-            = jax.random.split(self.key, 6)
+        self.key, policy_key, critic_key, critic_batch_renorm_key, entropy_coefficient_key \
+            = jax.random.split(self.key, 5)
 
         self.env_as_low = env.single_action_space.low
         self.env_as_high = env.single_action_space.high
@@ -100,17 +98,11 @@ class CrossQ2:
         state = jnp.array([self.env.single_observation_space.sample()])
         action = jnp.array([self.env.single_action_space.sample()])
 
-        policy_init = self.policy.init(
-            {"params": policy_key, "batch_stats": policy_batch_renorm_key},
-            state, train=False
-        )
-        self.policy_state = RLTrainState.create(
+        self.policy_state = TrainState.create(
             apply_fn=self.policy.apply,
-            params=policy_init["params"],
-            batch_stats=policy_init["batch_stats"],
+            params=self.policy.init(policy_key, state),
             tx=optax.inject_hyperparams(optax.adam)(
                 learning_rate=self.policy_learning_rate,
-                b1=self.policy_adam_b1,
             )
         )
 
@@ -124,7 +116,6 @@ class CrossQ2:
             batch_stats=critic_init["batch_stats"],
             tx=optax.inject_hyperparams(optax.adam)(
                 learning_rate=self.q_learning_rate,
-                b1=self.critic_adam_b1,
             )
         )
 
@@ -144,10 +135,7 @@ class CrossQ2:
     def train(self):
         @jax.jit
         def get_action(policy_state: TrainState, state: np.ndarray, key: jax.random.PRNGKey):
-            dist = self.policy.apply(
-                {"params": policy_state.params, "batch_stats": policy_state.batch_stats},
-                state, train=False
-            )
+            dist = self.policy.apply(policy_state.params, state)
             key, subkey = jax.random.split(key)
             action = dist.sample(seed=subkey)
             return action, key
@@ -163,10 +151,7 @@ class CrossQ2:
                         subkey: jax.random.PRNGKey
                 ):
                 # Critic loss
-                dist = self.policy.apply(
-                    {"params": policy_state.params, "batch_stats": policy_state.batch_stats},
-                    next_state, train=False
-                )
+                dist = self.policy.apply(policy_state.params, next_state)
                 next_action = dist.sample(seed=subkey)
                 next_log_prob = dist.log_prob(next_action)
 
@@ -198,10 +183,7 @@ class CrossQ2:
                         state: np.ndarray, subkey: jax.random.PRNGKey
                 ):
                 # Policy loss
-                dist, policy_state_update = self.policy.apply(
-                    {"params": policy_params, "batch_stats": policy_state.batch_stats},
-                    state, train=True, mutable=["batch_stats"]
-                )
+                dist = self.policy.apply(policy_params, state)
                 current_action = dist.sample(seed=subkey)
                 current_log_prob = dist.log_prob(current_action)
                 entropy = stop_gradient(-current_log_prob)
@@ -232,7 +214,7 @@ class CrossQ2:
                     "q_value/q_value": jnp.mean(min_q),
                 }
 
-                return loss, (policy_state_update, metrics)
+                return loss, (metrics,)
 
 
             grad_critic_loss_fn = jax.value_and_grad(critic_loss_fn, argnums=(0,), has_aux=True)
@@ -275,13 +257,11 @@ class CrossQ2:
             # Update policy and entropy coefficient
             key, policy_entropy_key = jax.random.split(key, 2)
 
-            (policy_loss, (policy_state_update, policy_entropy_metrics)), (policy_gradients, entropy_gradients) = grad_policy_entropy_loss_fn(
+            (policy_loss, (policy_entropy_metrics,)), (policy_gradients, entropy_gradients) = grad_policy_entropy_loss_fn(
                 policy_state.params, entropy_coefficient_state.params, states[0], policy_entropy_key)
 
             policy_state = policy_state.apply_gradients(grads=policy_gradients)
             entropy_coefficient_state = entropy_coefficient_state.apply_gradients(grads=entropy_gradients)
-
-            policy_state = policy_state.replace(batch_stats=policy_state_update["batch_stats"])
 
             # Complete metrics
             metrics = {**critic_metrics, **policy_entropy_metrics}
@@ -294,10 +274,7 @@ class CrossQ2:
 
         @jax.jit
         def get_deterministic_action(policy_state: TrainState, state: np.ndarray):
-            dist = self.policy.apply(
-                {"params": policy_state.params, "batch_stats": policy_state.batch_stats},
-                state, train=False
-            )
+            dist = self.policy.apply(policy_state.params, state)
             action = dist.mode()
             return self.get_processed_action(action)
 
@@ -527,10 +504,7 @@ class CrossQ2:
     def test(self, episodes):
         @jax.jit
         def get_action(policy_state: TrainState, state: np.ndarray):
-            dist = self.policy.apply(
-                {"params": policy_state.params, "batch_stats": policy_state.batch_stats},
-                state, train=False
-            )
+            dist = self.policy.apply(policy_state.params, state)
             action = dist.mode()
             return self.get_processed_action(action)
         

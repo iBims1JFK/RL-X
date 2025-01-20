@@ -10,9 +10,7 @@ def get_config(algorithm_name):
     config.total_timesteps = 1e9
     config.learning_rate = 1e-4
     config.anneal_learning_rate = False
-    config.policy_adam_b1 = 0.5
-    config.critic_adam_b1 = 0.5
-    config.buffer_size = 10e6
+    config.buffer_size = 1e6
     config.learning_starts = 5000
     config.batch_size = 256
     config.gamma = 0.99

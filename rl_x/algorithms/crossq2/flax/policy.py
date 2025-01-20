@@ -22,7 +22,6 @@ def get_policy(config, env):
                 env.single_action_space.shape,
                 config.algorithm.log_std_min,
                 config.algorithm.log_std_max,
-                config.algorithm.batch_norm_momentum,
                 config.algorithm.policy_nr_hidden_units
             ),
             get_processed_action_function(jnp.array(env.single_action_space.low), jnp.array(env.single_action_space.high))
@@ -34,29 +33,14 @@ class Policy(nn.Module):
     as_shape: Sequence[int]
     log_std_min: float
     log_std_max: float
-    batch_norm_momentum: float
     nr_hidden_units: int
 
     @nn.compact
-    def __call__(self, x, train):
-        x = nn.BatchNorm(
-            use_running_average=not train,
-            momentum=self.batch_norm_momentum,
-        )(x)
-
+    def __call__(self, x):
         x = nn.Dense(self.nr_hidden_units)(x)
         x = nn.relu(x)
-        x = nn.BatchNorm(
-            use_running_average=not train,
-            momentum=self.batch_norm_momentum,
-        )(x)
-
         x = nn.Dense(self.nr_hidden_units)(x)
         x = nn.relu(x)
-        x = nn.BatchNorm(
-            use_running_average=not train,
-            momentum=self.batch_norm_momentum,
-        )(x)
 
         mean = nn.Dense(np.prod(self.as_shape).item())(x)
         log_std = nn.Dense(np.prod(self.as_shape).item())(x)
