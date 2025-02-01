@@ -59,6 +59,8 @@ class PPO:
             raise ValueError("Evaluation frequency must be a multiple of the number of steps and environments.")
 
         rlx_logger.info(f"Using device: {jax.default_backend()}")
+
+        self.nr_devices = jax.local_device_count()
         
         self.key = jax.random.PRNGKey(self.seed)
         self.key, policy_key, critic_key = jax.random.split(self.key, 3)
@@ -98,6 +100,14 @@ class PPO:
             )
         )
 
+        self.policy_state = jax.device_put_replicated(
+            self.policy_state, jax.local_devices()
+        )
+
+        self.critic_state = jax.device_put_replicated(
+            self.critic_state, jax.local_devices()
+        )
+
         if self.save_model:
             os.makedirs(self.save_path)
             self.best_mean_return = -np.inf
@@ -116,6 +126,7 @@ class PPO:
             value = self.critic.apply(critic_state.params, state)
             processed_action = self.get_processed_action(action)
             return processed_action, action, value.reshape(-1), log_prob.sum(1), key
+        get_action_and_value = jax.pmap(get_action_and_value, axis_name='i')
         
 
         @jax.jit
@@ -132,6 +143,7 @@ class PPO:
             advantages = jnp.concatenate([advantages[::-1], jnp.array([init_advantages])])
             returns = advantages + values
             return advantages, returns
+        calculate_gae_advantages = jax.pmap(calculate_gae_advantages, axis_name='i')
         
 
         @jax.jit
@@ -208,6 +220,9 @@ class PPO:
                     minibatch_advantages
                 )
 
+                policy_gradients = jax.lax.pmean(policy_gradients, axis_name='i')
+                critic_gradients = jax.lax.pmean(critic_gradients, axis_name='i')
+
                 policy_state = policy_state.apply_gradients(grads=policy_gradients)
                 critic_state = critic_state.apply_gradients(grads=critic_gradients)
 
@@ -230,6 +245,7 @@ class PPO:
 
             return policy_state, critic_state, mean_metrics, key
 
+        update = jax.pmap(update, axis_name='i')
 
         @jax.jit
         def get_deterministic_action(policy_state: TrainState, state: np.ndarray):
@@ -267,7 +283,13 @@ class PPO:
             dones_this_rollout = 0
             step_info_collection = {}
             for step in range(self.nr_steps):
-                processed_action, action, value, log_prob, self.key = get_action_and_value(self.policy_state, self.critic_state, state, self.key)
+                self.key, subkey = jax.random.split(self.key)
+                subkeys = jax.random.split(subkey, self.nr_devices)
+                processed_action, action, value, log_prob, _ = get_action_and_value(self.policy_state, self.critic_state, state, subkeys)
+                processed_action = processed_action.squeeze(1)
+                action = action.squeeze(1)
+                value = value.squeeze(1)
+                log_prob = log_prob.squeeze(1)
                 next_state, reward, terminated, truncated, info = self.env.step(jax.device_get(processed_action))
                 done = terminated | truncated
                 actual_next_state = next_state.copy()
@@ -295,19 +317,28 @@ class PPO:
 
 
             # Calculating advantages and returns
-            batch.advantages, batch.returns = calculate_gae_advantages(self.critic_state, batch.next_states, batch.rewards, batch.terminations, batch.values)
+            next_states_t = jnp.transpose(batch.next_states, (1, 0, 2))
+            rewards_t = jnp.transpose(batch.rewards, (1, 0))
+            terminations_t = jnp.transpose(batch.terminations, (1, 0))
+            values_t = jnp.transpose(batch.values, (1, 0))
+            batch.advantages, batch.returns = calculate_gae_advantages(self.critic_state, next_states_t, rewards_t, terminations_t, values_t)
             
             calc_adv_return_end_time = time.time()
             time_metrics["time/calc_adv_and_return_time"] = calc_adv_return_end_time - acting_end_time
 
 
             # Optimizing
-            self.policy_state, self.critic_state, optimization_metrics, self.key = update(
+            states_t = jnp.transpose(batch.states, (1, 0, 2))
+            actions_t = jnp.transpose(batch.actions, (1, 0, 2))
+            log_probs_t = jnp.transpose(batch.log_probs, (1, 0))
+            self.key, subkey = jax.random.split(self.key)
+            subkeys = jax.random.split(subkey, self.nr_devices)
+            self.policy_state, self.critic_state, optimization_metrics, _ = update(
                 self.policy_state, self.critic_state,
-                batch.states, batch.actions, batch.advantages, batch.returns, batch.values, batch.log_probs,
-                self.key
+                states_t, actions_t, batch.advantages, batch.returns, values_t, log_probs_t,
+                subkeys
             )
-            optimization_metrics = {key: value.item() for key, value in optimization_metrics.items()}
+            optimization_metrics = {key: value.mean().item() for key, value in optimization_metrics.items()}
             nr_updates += self.nr_epochs * self.nr_minibatches
 
             optimizing_end_time = time.time()
