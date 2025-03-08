@@ -12,31 +12,31 @@ readme = "README.md"
 dependencies = [
     "absl-py>=1.4.0",
     "ml-collections>=0.1.1",
-    "wandb>=0.16.4",
+    "wandb==0.17.0",
     "gymnasium[mujoco,classic-control,atari,accept-rom-license,other]>=0.29.1",
     "mujoco>=3.1.3",
     "mujoco-mjx>=3.1.3",
-    "numpy<=1.24.3",
+    "numpy==1.24.3",
     "tensorflow<=2.15.1",
     "tensorboard<=2.15.2",
-    "jax[cpu]>=0.4.25",
-    "flax>=0.8.1",
-    "orbax_checkpoint>=0.5.3",
-    "optax>=0.1.9",
+    "jax[cpu]>=0.4.28",
+    "flax==0.8.3",
+    "orbax_checkpoint==0.5.3",
+    "optax==0.2.2",
     "chex>=0.1.85",
     "tensorflow_probability>=0.23.0"
 ]
 
 [project.optional-dependencies]
 envpool = [
-    "envpool>=0.8.4"
+    "envpool==0.8.4"
 ]
 all = [
     "rl_x[envpool]"
 ]
 
 [project.urls]
-repository = "https://github.com/nico-bohlinger/rl-x"
+repository = "https://github.com/iBims1JFK/RL-X/"
 
 [tool.setuptools.dynamic]
 readme = {file = "README.md", content-type = "text/markdown"}
