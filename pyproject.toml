@@ -33,7 +33,7 @@ mujoco = [
 ]
 dm_control = [
     "dm_control>=1.0.34",
-    "shimmy>=0.2.1", # Shimmy is usually needed for dm_control -> gymnasium compatibility
+    "shimmy>=0.2.1",
 ]
 atari = [
     "gymnasium[atari,accept-rom-license]",
@@ -60,4 +60,9 @@ repository = "https://github.com/nico-bohlinger/rl-x"
 readme = {file = "README.md", content-type = "text/markdown"}
 
 [tool.setuptools.packages.find]
-include = ["rl_x"]
+include = ["rl_x", "rl_x.*", "experiments", "experiments.*"]
+namespaces = true 
+
+[project.scripts]
+rl_x = "rl_x.cli:main"
+
