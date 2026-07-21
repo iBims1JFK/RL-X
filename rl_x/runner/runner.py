@@ -103,7 +103,7 @@ class Runner:
 
         import gymnasium as gym
         # Silences the box bound precision warning for cartpole
-        gym.logger.set_level(40)
+        # gym.logger.set_level(40)
 
         if algorithm_uses_torch:  
             # Avoids warning when TensorFloat32 is available
@@ -328,7 +328,7 @@ class Runner:
                 "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in all_config_items])),
             )
 
-        train_env, eval_env = self._create_train_and_eval_env(self._config)
+        train_env, eval_env = self._create_train_and_eval_env(self._config)[:2]
         
         if self._config.runner.load_model:
             explicitly_set_algorithm_params = [param_name for param_name in self._algorithm_config_flag._flagvalues if param_name.startswith("algorithm.")]
@@ -362,7 +362,7 @@ class Runner:
         run_path = f"runs/{self._config.runner.project_name}/{self._config.runner.exp_name}/{self._config.runner.run_name}"
         run_path = os.path.abspath(run_path)
 
-        train_env, eval_env = self._create_train_and_eval_env(self._config)
+        train_env, eval_env = self._create_train_and_eval_env(self._config)[:2]
         
         if self._config.runner.load_model:
             explicitly_set_algorithm_params = [param_name for param_name in self._algorithm_config_flag._flagvalues if param_name.startswith("algorithm.")]
